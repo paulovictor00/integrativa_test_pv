@@ -1,85 +1,161 @@
-using System.Data;
 using Npgsql;
 using MongoDB.Bson;
+
+#nullable enable
 
 namespace integrativa_api.funcoes
 {
     public static class integrativaServer
     {
-        public static string Conexao = "";
+        public static string Conexao { get; set; } = string.Empty;
+        static string? UsuarioPermitido { get; set; }
+        static string? SenhaPermitida { get; set; }
 
         public static BsonDocument Status() => new BsonDocument { { "status", "ON" } };
 
         public static void ValidaToken(string token)
         {
-            if (string.IsNullOrWhiteSpace(token)) throw new Exception("Token ausente.");
+            if (string.IsNullOrWhiteSpace(token))
+                throw new UnauthorizedAccessException("Token ausente.");
+
+            const string prefixo = "Bearer ";
+            if (!token.StartsWith(prefixo, StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("Cabeçalho Authorization inválido.");
+
+            var conteudo = token[prefixo.Length..].Trim();
+            if (!TokenService.ValidarToken(conteudo, out _))
+                throw new UnauthorizedAccessException("Token inválido ou expirado.");
         }
 
-        // -------- Helpers DB --------
+        public static void CriarTabelasSeNecessario()
+        {
+            const string sql = @"
+            CREATE TABLE IF NOT EXISTS processos (
+                id SERIAL PRIMARY KEY,
+                numeroprocesso VARCHAR(100) UNIQUE NOT NULL,
+                autor VARCHAR(200) NOT NULL,
+                reu VARCHAR(200) NOT NULL,
+                dataajuizamento DATE NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                descricao TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS historicos (
+                id SERIAL PRIMARY KEY,
+                processoid INT NOT NULL REFERENCES processos(id) ON DELETE CASCADE,
+                descricao TEXT NOT NULL,
+                datainclusao TIMESTAMP NOT NULL,
+                dataalteracao TIMESTAMP
+            );
+            ";
+
+            using var cn = CreateConnection();
+            cn.Open();
+            using var cmd = new NpgsqlCommand(sql, cn);
+            cmd.ExecuteNonQuery();
+        }
+
+        static NpgsqlConnection CreateConnection()
+        {
+            if (string.IsNullOrWhiteSpace(Conexao))
+                throw new InvalidOperationException("Connection string não configurada.");
+            return new NpgsqlConnection(Conexao);
+        }
+
         static int ExecNonQuery(string sql, params (string, object?)[] pars)
         {
-            using (var cn = new NpgsqlConnection(Conexao))
-            {
-                cn.Open();
-                using (var cmd = new NpgsqlCommand(sql, cn))
-                {
-                    foreach (var p in pars) cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
-                    return cmd.ExecuteNonQuery();
-                }
-            }
+            using var cn = CreateConnection();
+            cn.Open();
+            using var cmd = new NpgsqlCommand(sql, cn);
+            foreach (var p in pars)
+                cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
+            return cmd.ExecuteNonQuery();
         }
 
         static object? ExecScalar(string sql, params (string, object?)[] pars)
         {
-            using (var cn = new NpgsqlConnection(Conexao))
-            {
-                cn.Open();
-                using (var cmd = new NpgsqlCommand(sql, cn))
-                {
-                    foreach (var p in pars) cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
-                    return cmd.ExecuteScalar();
-                }
-            }
+            using var cn = CreateConnection();
+            cn.Open();
+            using var cmd = new NpgsqlCommand(sql, cn);
+            foreach (var p in pars)
+                cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
+            return cmd.ExecuteScalar();
         }
 
         static BsonDocument ExecSelect(string sql, params (string, object?)[] pars)
         {
-            var outDoc = new BsonDocument();
             var lista = new BsonArray();
-
-            using (var cn = new NpgsqlConnection(Conexao))
+            using var cn = CreateConnection();
+            cn.Open();
+            using var cmd = new NpgsqlCommand(sql, cn);
+            foreach (var p in pars)
+                cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
             {
-                cn.Open();
-                using (var cmd = new NpgsqlCommand(sql, cn))
-                {
-                    foreach (var p in pars) cmd.Parameters.AddWithValue(p.Item1, p.Item2 ?? DBNull.Value);
-                    using (var rd = cmd.ExecuteReader())
-                    {
-                        while (rd.Read())
-                        {
-                            var doc = new BsonDocument();
-                            for (int i = 0; i < rd.FieldCount; i++)
-                                doc[rd.GetName(i)] = BsonValue.Create(rd.GetValue(i));
-                            lista.Add(doc);
-                        }
-                    }
-                }
+                var doc = new BsonDocument();
+                for (int i = 0; i < rd.FieldCount; i++)
+                    doc[rd.GetName(i)] = MongoDB.Bson.BsonValue.Create(rd.GetValue(i));
+                lista.Add(doc);
             }
 
-            outDoc["resultado"] = lista;
-            return outDoc;
+            return new BsonDocument { { "resultado", lista } };
         }
 
         static DateTime ReadUtc(BsonDocument b, string key, DateTime def)
         {
-            if (!b.Contains(key)) return def;
-            var v = b[key];
-            return v.IsValidDateTime ? v.ToUniversalTime() : def;
+            if (!b.TryGetValue(key, out var v) || v.IsBsonNull)
+                return def;
+
+            if (v.IsValidDateTime)
+                return v.ToUniversalTime();
+
+            if (v.IsString && DateTime.TryParse(v.AsString, System.Globalization.CultureInfo.InvariantCulture,
+                                                System.Globalization.DateTimeStyles.AssumeUniversal |
+                                                System.Globalization.DateTimeStyles.AdjustToUniversal,
+                                                out var parsed))
+            {
+                return parsed;
+            }
+
+            return def;
+        }
+
+        public static void ConfigurarCredenciais(string usuario, string senha)
+        {
+            if (string.IsNullOrWhiteSpace(usuario) || string.IsNullOrWhiteSpace(senha))
+                throw new InvalidOperationException("Credenciais da API não configuradas.");
+
+            UsuarioPermitido = usuario;
+            SenhaPermitida = senha;
+        }
+
+        public static BsonDocument Login(string usuario, string senha)
+        {
+            if (string.IsNullOrWhiteSpace(usuario) || string.IsNullOrWhiteSpace(senha))
+                throw new UnauthorizedAccessException("Credenciais inválidas.");
+
+            if (UsuarioPermitido is null || SenhaPermitida is null)
+                throw new InvalidOperationException("Credenciais da API não configuradas.");
+
+            if (!string.Equals(usuario, UsuarioPermitido, StringComparison.Ordinal) ||
+                !string.Equals(senha, SenhaPermitida, StringComparison.Ordinal))
+            {
+                throw new UnauthorizedAccessException("Credenciais inválidas.");
+            }
+
+            var token = TokenService.GerarToken(usuario);
+            var expiraEm = DateTime.UtcNow.AddMinutes(TokenService.ValidadeEmMinutos).ToString("o");
+            return new BsonDocument
+            {
+                { "token", token },
+                { "expiraEm", expiraEm },
+                { "usuario", usuario }
+            };
         }
 
         // ===================== PROCESSOS =====================
 
-        // GET listar
         public static BsonDocument ListarProcessos(string token, string? numero)
         {
             ValidaToken(token);
@@ -88,7 +164,6 @@ namespace integrativa_api.funcoes
             return ExecSelect("SELECT * FROM processos WHERE numeroprocesso ILIKE @n ORDER BY id DESC", ("@n", "%" + numero + "%"));
         }
 
-        // GET obter (com históricos)
         public static BsonDocument ObterProcesso(string token, int id)
         {
             ValidaToken(token);
@@ -97,7 +172,6 @@ namespace integrativa_api.funcoes
             return new BsonDocument { { "processo", proc["resultado"] }, { "historicos", hist["resultado"] } };
         }
 
-        // POST /api/processos  -> body.op in {inserir, editar, excluir}
         public static BsonDocument Processos(string token, BsonDocument body)
         {
             ValidaToken(token);
@@ -113,7 +187,7 @@ namespace integrativa_api.funcoes
                 var desc   = body.GetValue("Descricao", "").AsString;
 
                 var existe = ExecScalar("SELECT 1 FROM processos WHERE numeroprocesso=@n LIMIT 1", ("@n", numero));
-                if (existe != null) throw new Exception("Número de processo já existe.");
+                if (existe != null) throw new InvalidOperationException("Número de processo já existe.");
 
                 var linhas = ExecNonQuery(
                     "INSERT INTO processos (numeroprocesso, autor, reu, dataajuizamento, status, descricao) " +
@@ -134,7 +208,7 @@ namespace integrativa_api.funcoes
 
                 var existe = ExecScalar("SELECT 1 FROM processos WHERE numeroprocesso=@n AND id<>@id LIMIT 1",
                                         ("@n", numero), ("@id", id));
-                if (existe != null) throw new Exception("Número de processo já existe.");
+                if (existe != null) throw new InvalidOperationException("Número de processo já existe.");
 
                 var linhas = ExecNonQuery(
                     "UPDATE processos SET numeroprocesso=@n, autor=@a, reu=@r, dataajuizamento=@d, status=@s, descricao=@desc WHERE id=@id",
@@ -150,20 +224,18 @@ namespace integrativa_api.funcoes
             }
             else
             {
-                throw new Exception("Op inválida. Use: inserir | editar | excluir.");
+                throw new ArgumentException("Op inválida. Use: inserir | editar | excluir.");
             }
         }
 
         // ===================== HISTÓRICOS =====================
 
-        // GET listar por processo
         public static BsonDocument ListarHistoricos(string token, int processoId)
         {
             ValidaToken(token);
             return ExecSelect("SELECT * FROM historicos WHERE processoid=@p ORDER BY id DESC", ("@p", processoId));
         }
 
-        // POST /api/historicos -> body.op in {inserir, editar, excluir}
         public static BsonDocument Historicos(string token, BsonDocument body)
         {
             ValidaToken(token);
@@ -177,7 +249,7 @@ namespace integrativa_api.funcoes
                 var inc = DateTime.UtcNow;
 
                 var existe = ExecScalar("SELECT 1 FROM processos WHERE id=@p LIMIT 1", ("@p", processoId));
-                if (existe == null) throw new Exception("Processo não encontrado.");
+                if (existe == null) throw new KeyNotFoundException("Processo não encontrado.");
 
                 var linhas = ExecNonQuery(
                     "INSERT INTO historicos (processoid, descricao, datainclusao) VALUES (@p,@d,@i)",
@@ -211,7 +283,7 @@ namespace integrativa_api.funcoes
             }
             else
             {
-                throw new Exception("Op inválida. Use: inserir | editar | excluir.");
+                throw new ArgumentException("Op inválida. Use: inserir | editar | excluir.");
             }
         }
     }

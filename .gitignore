@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+/backend/**/bin/
+/backend/**/obj/
+/frontend/dist/
+/frontend/.angular/cache/
+
+# User-specific files
+*.user
+*.suo
+*.userprefs
+*.csproj.user
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
+.idea/
+
+# Logs and runtime files
+logs/
+*.log
+
+# Environment / secrets
+.env
+*.secrets.json
+
+# Node dependencies
+frontend/node_modules/

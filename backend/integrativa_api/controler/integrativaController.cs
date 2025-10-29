@@ -1,11 +1,15 @@
-using System.Net;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Bson;
 using MongoDB.Bson.IO;
 using integrativa_api.funcoes;
 
+#nullable enable
+
 namespace integrativa_api.controler
 {
+    public record LoginPayload(string usuario, string senha);
+
     [ApiController]
     [Route("")]
     public class integrativaController : ControllerBase
@@ -19,20 +23,24 @@ namespace integrativa_api.controler
         [Route("")]
         public IActionResult StatusApi()
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.Status(); }
-            catch (Exception ex) { r = new BsonDocument { { "erro", ex.Message } }; }
-            return Retorno(r);
+            return SafeExecute(() => integrativaServer.Status());
         }
 
         [HttpGet]
         [Route("api")]
         public IActionResult Status()
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.Status(); }
-            catch (Exception ex) { r = new BsonDocument { { "erro", ex.Message } }; }
-            return Retorno(r);
+            return SafeExecute(() => integrativaServer.Status());
+        }
+
+        [HttpPost]
+        [Route("api/auth/login")]
+        public IActionResult Login([FromBody] LoginPayload body)
+        {
+            if (body is null)
+                return BadRequest(new { erro = "Corpo da requisição inválido." });
+
+            return SafeExecute(() => integrativaServer.Login(body.usuario, body.senha));
         }
 
         // -------- Processos (GET: listar/obter) --------
@@ -40,20 +48,16 @@ namespace integrativa_api.controler
         [Route("api/processos")]
         public IActionResult ListarProcessos([FromQuery] string? numero = null)
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.ListarProcessos(Request.Headers.Authorization.ToString(), numero); }
-            catch (Exception ex) { r["erro"] = ex.Message; }
-            return Retorno(r);
+            var token = Request.Headers.Authorization.ToString();
+            return SafeExecute(() => integrativaServer.ListarProcessos(token, numero));
         }
 
         [HttpGet]
         [Route("api/processos/{id:int}")]
         public IActionResult ObterProcesso(int id)
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.ObterProcesso(Request.Headers.Authorization.ToString(), id); }
-            catch (Exception ex) { r["erro"] = ex.Message; }
-            return Retorno(r);
+            var token = Request.Headers.Authorization.ToString();
+            return SafeExecute(() => integrativaServer.ObterProcesso(token, id));
         }
 
         // -------- Processos (POST: inserir/editar/excluir via op) --------
@@ -61,10 +65,8 @@ namespace integrativa_api.controler
         [Route("api/processos")]
         public IActionResult Processos([FromBody] BsonDocument body)
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.Processos(Request.Headers.Authorization.ToString(), body); }
-            catch (Exception ex) { r["erro"] = ex.Message; }
-            return Retorno(r);
+            var token = Request.Headers.Authorization.ToString();
+            return SafeExecute(() => integrativaServer.Processos(token, body));
         }
 
         // -------- Históricos (GET: listar por processo) --------
@@ -72,10 +74,8 @@ namespace integrativa_api.controler
         [Route("api/processos/{processoId:int}/historicos")]
         public IActionResult ListarHistoricos(int processoId)
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.ListarHistoricos(Request.Headers.Authorization.ToString(), processoId); }
-            catch (Exception ex) { r["erro"] = ex.Message; }
-            return Retorno(r);
+            var token = Request.Headers.Authorization.ToString();
+            return SafeExecute(() => integrativaServer.ListarHistoricos(token, processoId));
         }
 
         // -------- Históricos (POST: inserir/editar/excluir via op) --------
@@ -83,16 +83,37 @@ namespace integrativa_api.controler
         [Route("api/historicos")]
         public IActionResult Historicos([FromBody] BsonDocument body)
         {
-            var r = new BsonDocument();
-            try { r = integrativaServer.Historicos(Request.Headers.Authorization.ToString(), body); }
-            catch (Exception ex) { r["erro"] = ex.Message; }
-            return Retorno(r);
+            var token = Request.Headers.Authorization.ToString();
+            return SafeExecute(() => integrativaServer.Historicos(token, body));
         }
 
-        private ContentResult Retorno(BsonDocument r)
+        private ContentResult SafeExecute(Func<BsonDocument> action)
         {
-            var json = r.ToJson(new JsonWriterSettings { OutputMode = JsonOutputMode.Strict });
-            return new ContentResult { Content = json, ContentType = "application/json", StatusCode = (int)HttpStatusCode.OK };
+            try
+            {
+                var doc = action();
+                return Retorno(doc, StatusCodes.Status200OK);
+            }
+            catch (Exception ex)
+            {
+                var doc = new BsonDocument { { "erro", ex.Message } };
+                return Retorno(doc, MapStatus(ex));
+            }
+        }
+
+        private static int MapStatus(Exception ex) => ex switch
+        {
+            UnauthorizedAccessException => StatusCodes.Status401Unauthorized,
+            KeyNotFoundException => StatusCodes.Status404NotFound,
+            ArgumentException => StatusCodes.Status400BadRequest,
+            InvalidOperationException => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status500InternalServerError
+        };
+
+        private ContentResult Retorno(BsonDocument r, int statusCode)
+        {
+            var json = r.ToJson(new JsonWriterSettings { OutputMode = JsonOutputMode.CanonicalExtendedJson });
+            return new ContentResult { Content = json, ContentType = "application/json", StatusCode = statusCode };
         }
     }
 }
