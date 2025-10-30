@@ -18,10 +18,10 @@ var senhaAutorizada = secaoAutenticacao.GetValue<string>("Senha") ?? "";
 var segredoAutenticacao = secaoAutenticacao.GetValue<string>("Secret") ?? "";
 var validadeMinutos = secaoAutenticacao.GetValue<int?>("ExpireMinutes") ?? 60;
 
+integrativaServer.CriarTabelasSeNecessario();
+
 integrativaServer.ConfigurarCredenciais(usuarioAutorizado, senhaAutorizada);
 TokenService.Configurar(segredoAutenticacao, validadeMinutos);
-
-integrativaServer.CriarTabelasSeNecessario();
 
 var app = builder.Build();
 app.UseCors();

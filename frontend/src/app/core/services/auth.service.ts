@@ -3,9 +3,30 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { BehaviorSubject, Observable, tap } from 'rxjs';
 
-const API_URL = (typeof window !== 'undefined' && (window as any).INTEGRATIVA_API_URL) || 'http://localhost:5000';
+const API_URL = resolverApiBase();
+
+function resolverApiBase(): string {
+  if (typeof window === 'undefined') {
+    return 'http://localhost:5000';
+  }
+
+  const origin = window.location.origin;
+  const porta = window.location.port;
+
+  if (porta === '4200') {
+    return 'http://localhost:5000';
+  }
+
+  return origin || 'http://localhost:5000';
+}
 
 export interface CredenciaisLogin {
+  usuario: string;
+  senha: string;
+}
+
+export interface CadastroUsuario {
+  nome: string;
   usuario: string;
   senha: string;
 }
@@ -39,6 +60,11 @@ export class AuthService {
         this.usuarioSubject.next(resposta.usuario);
       })
     );
+  }
+
+  registrar(dados: CadastroUsuario): Observable<{ resultado: string }> {
+    const url = `${API_URL}/api/auth/register`;
+    return this.http.post<{ resultado: string }>(url, dados);
   }
 
   sair(): void {

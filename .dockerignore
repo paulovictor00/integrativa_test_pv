@@ -1,0 +1,18 @@
+# Logs
+**/bin/
+**/obj/
+**/node_modules/
+**/.angular/
+**/dist/
+**/*.log
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Others
+docker-compose.yml
